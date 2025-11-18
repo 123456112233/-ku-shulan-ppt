@@ -1,0 +1,29 @@
+{
+  "source_pages": [
+    {
+      "key": "china_daily",
+      "page_url": "https://govt.chinadaily.com.cn/s/202209/07/WS631837dc498ea274927a2ae9/works-by-folk-master-of-paper-cutting-exhibited-in-shaanxi.html",
+      "credit": "Photo/China Daily"
+    },
+    {
+      "key": "imumuseum",
+      "page_url": "https://art.icity.ly/events/8sq8rfh",
+      "credit": "Source: Shaanxi Art Museum / iMuseum"
+    },
+    {
+      "key": "youth_cn",
+      "page_url": "https://en.youth.cn/RightNow/202507/t20250709_16106865.htm",
+      "credit": "Photo/CFP (Youth.cn)"
+    },
+    {
+      "key": "sohu",
+      "page_url": "https://www.sohu.com/a/568202533_121124404",
+      "credit": "Source: Sohu / Xianyang Library"
+    },
+    {
+      "key": "alice_blog",
+      "page_url": "https://aliceandthecity.com/2011/06/08/kushulan/",
+      "credit": "Alice & The City (blog)"
+    }
+  ]
+}
