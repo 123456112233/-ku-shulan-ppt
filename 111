@@ -1,0 +1,357 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+generate_ku_shulan_ppt.py
+Generate a PPTX educational template about Ku Shulan (库淑兰) with images downloaded
+from public pages and with speaker notes and image attributions.
+
+Dependencies:
+  pip install python-pptx requests beautifulsoup4 lxml
+
+Usage:
+  python generate_ku_shulan_ppt.py
+The script will:
+  - scrape a list of source pages for image URLs (first few <img> tags on the page)
+  - download images into ./images/
+  - build ku-shulan-presentation.pptx with slides, speaker notes, and attribution
+Notes:
+  - You can edit SLIDE_DEFINITIONS to change slide text or to point to different page URLs.
+  - If you already have specific image URLs, put them into images_map (slide_key -> image_url)
+  - Fonts named in the script (e.g., 'KaiTi', 'SimSun') must be available on the machine to render exactly.
+"""
+
+import os
+import sys
+import json
+import re
+import requests
+from urllib.parse import urljoin, urlparse
+from bs4 import BeautifulSoup
+from pptx import Presentation
+from pptx.util import Inches, Pt
+from pptx.dml.color import RGBColor
+
+# ---- Config ----
+OUTPUT_PPTX = "ku-shulan-presentation.pptx"
+IMAGES_DIR = "images"
+BACKGROUND_COLOR = "deepblue"  # "deepblue" or "chinese-red"
+
+# Source pages (collected from public pages). The script will try to scrape images from these pages.
+# Each entry: key, page_url, preferred attribution text (will appear in speaker notes/footer)
+SOURCE_PAGES = [
+    {
+        "key": "china_daily",
+        "page_url": "https://govt.chinadaily.com.cn/s/202209/07/WS631837dc498ea274927a2ae9/works-by-folk-master-of-paper-cutting-exhibited-in-shaanxi.html",
+        "credit": "Photo/China Daily"
+    },
+    {
+        "key": "imumuseum",
+        "page_url": "https://art.icity.ly/events/8sq8rfh",
+        "credit": "Source: Shaanxi Art Museum / iMuseum"
+    },
+    {
+        "key": "youth_cn",
+        "page_url": "https://en.youth.cn/RightNow/202507/t20250709_16106865.htm",
+        "credit": "Photo/CFP (Youth.cn)"
+    },
+    {
+        "key": "sohu",
+        "page_url": "https://www.sohu.com/a/568202533_121124404",
+        "credit": "Source: Sohu / Xianyang Library (where shown)"
+    },
+    {
+        "key": "alice_blog",
+        "page_url": "https://aliceandthecity.com/2011/06/08/kushulan/",
+        "credit": "Alice & The City (blog) - credit original source if listed"
+    }
+]
+
+# Slide definitions:
+# Each slide will try to associate an image by specifying source_key (one of SOURCE_PAGES' keys).
+# If image not found, the slide will be created without image but still include notes/attribution.
+SLIDE_DEFINITIONS = [
+    {
+        "title": "剪花娘子的彩色世界——走近剪纸大师库淑兰",
+        "body": "初中美术 · 民间艺术鉴赏与实践",
+        "source_key": "china_daily",
+        "notes": "封面：库淑兰奶奶与她的代表作品并列。Photo credit will be added below."
+    },
+    {
+        "title": "猜猜看",
+        "body": "看这些作品，猜一猜创作这些作品的人会是怎样的人？\n鼓励学生自由发言（年纪、性别、职业等）。",
+        "source_key": "sohu",
+        "notes": "互动提问页：放多张代表作缩略图供学生观察与讨论。"
+    },
+    {
+        "title": "她是谁？",
+        "body": "库淑兰，陕西旬邑人，自称“剪花娘子”，联合国教科文组织授予“民间工艺美术大师”。",
+        "source_key": "youth_cn",
+        "notes": "陈述她的生平与精神世界，用讲故事的语气。"
+    },
+    {
+        "title": "从“剪”到“贴”",
+        "body": "核心概念：拼贴剪纸（先剪部件，再拼贴）\n对比：传统单色剪纸 vs 库淑兰的彩色拼贴剪纸",
+        "source_key": "imumuseum",
+        "notes": "展示左为传统剪纸，右为库淑兰彩色拼贴（若无法抓到传统剪纸图，可用库淑兰作品近景做示意）。"
+    },
+    {
+        "title": "色彩的魔法",
+        "body": "关键词：浓烈、对比、自由、象征\n引导观察颜色搭配及其情感效果。",
+        "source_key": "china_daily",
+        "notes": "展示多幅代表作，提示学生用形容词描述感受。"
+    },
+    {
+        "title": "构图与意象——万物有灵",
+        "body": "关键词：饱满对称、中心放射、意象象征（石榴、鸡冠花、太阳等）",
+        "source_key": "imumuseum",
+        "notes": "分析《剪花娘子》构图特征与象征。"
+    },
+    {
+        "title": "生命的故事",
+        "body": "艺术不仅是技巧，更是治愈心灵、表达自我的方式。库淑兰用剪纸把苦难人生变成灿烂神话。",
+        "source_key": "youth_cn",
+        "notes": "讲述重病后的转折故事，情感升华。"
+    },
+    {
+        "title": "准备动手",
+        "body": "准备材料：彩纸、剪刀、胶、底板。注意安全。",
+        "source_key": None,
+        "notes": "过渡页，提示实操注意事项。"
+    },
+    {
+        "title": "动手任务：我的快乐花园 / 我的守护神",
+        "body": "要求：选择主题、先剪部件再拼贴、大胆用色、加入个人符号。\n步骤提示见下一页。",
+        "source_key": None,
+        "notes": "说明任务与完成标准。"
+    },
+    {
+        "title": "步骤提示与小技巧",
+        "body": "1. 构思草图\n2. 剪大块面\n3. 补细节\n4. 试摆后粘贴\n小提示：先大后小，不怕错",
+        "source_key": None,
+        "notes": "可添加教师现场示范的照片或示意图（如果有）。"
+    },
+    {
+        "title": "我们的画廊",
+        "body": "邀请学生展示作品，教师点评，关注色彩与情感表达。",
+        "source_key": None,
+        "notes": "课堂展示与点评环节。"
+    },
+    {
+        "title": "总结与延伸",
+        "body": "回顾：库淑兰、拼贴剪纸、色彩魔法、自我表达。\n课后拓展：了解本地民间艺术/写艺术家陈述。",
+        "source_key": "alice_blog",
+        "notes": "结束语与课后作业。"
+    }
+]
+
+# ---- Helper functions ----
+
+def ensure_dir(path):
+    if not os.path.exists(path):
+        os.makedirs(path)
+
+def sanitize_filename(s):
+    s = re.sub(r'[^0-9A-Za-z._\-()\u4e00-\u9fff ]+', '_', s)
+    return s[:200]
+
+def find_images_on_page(page_url, max_images=6, session=None):
+    """Return list of absolute image URLs found on the page (img[src]) in order."""
+    session = session or requests.Session()
+    headers = {"User-Agent": "Mozilla/5.0 (educational script)"}
+    try:
+        r = session.get(page_url, headers=headers, timeout=15)
+        r.raise_for_status()
+    except Exception as e:
+        print(f"Failed to fetch page {page_url}: {e}", file=sys.stderr)
+        return []
+    soup = BeautifulSoup(r.text, "lxml")
+    imgs = []
+    for img in soup.find_all("img"):
+        src = img.get("src") or img.get("data-src") or img.get("data-original")
+        if not src:
+            continue
+        src = src.strip()
+        if src.startswith("//"):
+            src = "https:" + src
+        elif src.startswith("/"):
+            parsed = urlparse(page_url)
+            src = f"{parsed.scheme}://{parsed.netloc}{src}"
+        elif not urlparse(src).scheme:
+            src = urljoin(page_url, src)
+        # filter very small placeholders or icons
+        if any(k in src.lower() for k in ["icon", "logo", "sprite", "ads", "qr"]):
+            continue
+        imgs.append(src)
+        if len(imgs) >= max_images:
+            break
+    return imgs
+
+def download_image(url, dest_dir, session=None):
+    session = session or requests.Session()
+    headers = {"User-Agent": "Mozilla/5.0 (educational script)"}
+    try:
+        r = session.get(url, headers=headers, timeout=20, stream=True)
+        r.raise_for_status()
+    except Exception as e:
+        print(f"Failed to download image {url}: {e}", file=sys.stderr)
+        return None
+    # determine filename
+    parsed = urlparse(url)
+    base = os.path.basename(parsed.path)
+    if not base or "." not in base:
+        base = "image"
+    filename = sanitize_filename(base)
+    # ensure unique
+    i = 0
+    filename_full = filename
+    while os.path.exists(os.path.join(dest_dir, filename_full)):
+        i += 1
+        filename_full = f"{i}_{filename}"
+    path = os.path.join(dest_dir, filename_full)
+    try:
+        with open(path, "wb") as f:
+            for chunk in r.iter_content(8192):
+                if chunk:
+                    f.write(chunk)
+    except Exception as e:
+        print(f"Error saving image {url} -> {path}: {e}", file=sys.stderr)
+        return None
+    return path
+
+# ---- Main PPT creation ----
+
+def build_pptx(slide_defs, images_map, attributions_map, output_path):
+    prs = Presentation()
+    # Optionally set slide size if desired. Use default for compatibility.
+    for idx, sdef in enumerate(slide_defs, start=1):
+        slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank layout
+        # background
+        if BACKGROUND_COLOR == "deepblue":
+            r, g, b = (12, 35, 95)  # deep blue
+        else:
+            r, g, b = (200, 16, 34)  # chinese red
+        fill = slide.background.fill
+        fill.solid()
+        from pptx.dml.color import RGBColor as _RGB
+        slide.background.fill.fore_color.rgb = _RGB(r, g, b)
+        # Title (top-left)
+        title_text = sdef.get("title", "")
+        if title_text:
+            left = Inches(0.6)
+            top = Inches(0.3)
+            width = Inches(9)
+            height = Inches(1.1)
+            txbox = slide.shapes.add_textbox(left, top, width, height)
+            tf = txbox.text_frame
+            p = tf.paragraphs[0]
+            p.text = title_text
+            p.font.name = "KaiTi"  # calligraphy-style; fallback depends on system
+            p.font.size = Pt(30)
+            p.font.bold = True
+            p.font.color.rgb = RGBColor(255, 245, 200)
+        # Body (left-bottom)
+        body_text = sdef.get("body", "")
+        if body_text:
+            left = Inches(0.6)
+            top = Inches(1.5)
+            width = Inches(6.5)
+            height = Inches(3.5)
+            txbox = slide.shapes.add_textbox(left, top, width, height)
+            tf = txbox.text_frame
+            tf.word_wrap = True
+            for i, line in enumerate(body_text.split("\n")):
+                p = tf.add_paragraph() if i > 0 else tf.paragraphs[0]
+                p.text = line
+                p.font.name = "SimSun"
+                p.font.size = Pt(18)
+                p.font.color.rgb = RGBColor(255, 255, 255)
+        # Image (right area)
+        img_path = images_map.get(sdef.get("source_key"))
+        if img_path:
+            try:
+                # Insert image with aspect preserved; allocate right-side area
+                left = Inches(7.2)
+                top = Inches(1.3)
+                max_w = Inches(3.5)
+                max_h = Inches(4.5)
+                pic = slide.shapes.add_picture(img_path, left, top, width=max_w)
+                # If pic height too tall, scale to max_h
+                if pic.height > max_h:
+                    ratio = max_h / pic.height
+                    pic.width = int(pic.width * ratio)
+                    pic.height = int(pic.height * ratio)
+                    pic.left = left  # keep position
+            except Exception as e:
+                print(f"Failed to insert image {img_path} into slide {idx}: {e}", file=sys.stderr)
+        # small footer attribution text (bottom-left)
+        attr = attributions_map.get(sdef.get("source_key"))
+        if attr:
+            left = Inches(0.6)
+            top = Inches(5.6)
+            width = Inches(9)
+            height = Inches(0.5)
+            txbox = slide.shapes.add_textbox(left, top, width, height)
+            tf = txbox.text_frame
+            p = tf.paragraphs[0]
+            p.text = f"图片来源/Photo credit: {attr}"
+            p.font.name = "SimSun"
+            p.font.size = Pt(11)
+            p.font.italic = True
+            p.font.color.rgb = RGBColor(255, 245, 200)
+        # notes
+        notes_slide = slide.notes_slide
+        notes = sdef.get("notes", "")
+        note_text = notes + "\n\nImage source page: " + (sdef.get("source_key") or "—")
+        notes_slide.notes_text_frame.text = note_text
+    prs.save(output_path)
+    print(f"PPTX saved to {output_path}")
+
+def main():
+    ensure_dir(IMAGES_DIR)
+    session = requests.Session()
+    # Build mapping from key to page info
+    page_map = {p["key"]: p for p in SOURCE_PAGES}
+    # Scrape and download first suitable image for each page key used by slides
+    keys_needed = set(s.get("source_key") for s in SLIDE_DEFINITIONS if s.get("source_key"))
+    images_map = {}
+    attributions_map = {}
+    for key in keys_needed:
+        if key not in page_map:
+            continue
+        entry = page_map[key]
+        page_url = entry["page_url"]
+        credit = entry.get("credit", "")
+        print(f"Scanning page for images: {page_url}")
+        imgs = find_images_on_page(page_url, max_images=8, session=session)
+        chosen_path = None
+        for img_url in imgs:
+            # basic filter: skip tiny images (by url length heuristics, we still attempt download)
+            path = download_image(img_url, IMAGES_DIR, session=session)
+            if path:
+                chosen_path = path
+                break
+        if chosen_path:
+            images_map[key] = chosen_path
+            attributions_map[key] = f"{credit} ({page_url})"
+            print(f"Downloaded image for {key}: {chosen_path}")
+        else:
+            print(f"No image downloaded for {key}; slide will not include an image.", file=sys.stderr)
+            attributions_map[key] = f"{credit} ({page_url})"
+    # Build PPTX
+    build_pptx(SLIDE_DEFINITIONS, images_map, attributions_map, OUTPUT_PPTX)
+    # Save metadata (image map + slide defs) for user's reference
+    meta = {
+        "output_pptx": OUTPUT_PPTX,
+        "images_dir": IMAGES_DIR,
+        "images_map": images_map,
+        "attributions": attributions_map,
+        "slide_definitions": SLIDE_DEFINITIONS,
+        "source_pages": SOURCE_PAGES
+    }
+    with open("generation_metadata.json", "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+    print("generation_metadata.json written (contains downloaded image paths and attributions).")
+    print("Done.")
+
+if __name__ == "__main__":
+    main()
